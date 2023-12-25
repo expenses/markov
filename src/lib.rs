@@ -65,6 +65,20 @@ enum IndexNode {
     },
 }
 
+fn get_unique_values(slice: &[u8]) -> HashSet<u8> {
+    let mut values = [false; 255];
+
+    for &v in slice.iter() {
+        values[v as usize] = true;
+    }
+
+    values
+        .iter()
+        .enumerate()
+        .filter_map(|(i, v)| if *v { Some(i as u8) } else { None })
+        .collect()
+}
+
 fn execute_root_node(
     root: Node<Replace>,
     state: &mut Array2D<&mut [u8]>,
@@ -83,15 +97,35 @@ fn execute_root_node(
         let replacment_interactions: Vec<bool> = (0..replaces.len())
             .map(|j| {
                 let next = &replaces[j];
-                next.from_values.contains(&WILDCARD)
-                    || !next.from_values.is_disjoint(&prev.to_values)
+                !next.from_values.is_disjoint(&prev.to_values)
             })
             .collect();
 
         interactions.push(replacment_interactions);
     }
 
+    dbg!(&interactions);
+
+    let mut inter = Vec::new();
+
+    for i in 0..replaces.len() {
+        let mut i_inter = Vec::new();
+
+        for j in 0..replaces.len() {
+            i_inter.push(get_interactions_between(&replaces[i], &replaces[j]));
+        }
+
+        inter.push(i_inter);
+    }
+
+    let unique_values = get_unique_values(&state.inner);
+
     replaces.par_iter_mut().for_each(|rep| {
+        // Don't bother searching for patterns that don't exist in the state.
+        // Note: if a pattern is _all_ wildcards then this doesn't work.
+        if !rep.from_values.is_subset(&unique_values) {
+            return;
+        }
         rep.store_initial_matches(state);
     });
 
@@ -103,6 +137,7 @@ fn execute_root_node(
             state,
             &mut replaces,
             &interactions,
+            &inter,
             rng,
             &mut updated,
         ) {
@@ -122,6 +157,7 @@ fn execute_node(
     state: &mut Array2D<&mut [u8]>,
     replaces: &mut [Replace],
     interactions: &[Vec<bool>],
+    interactions_2: &Vec<Vec<Vec<Vec<Interactions>>>>,
     rng: &mut SmallRng,
     updated: &mut Vec<u32>,
 ) -> bool {
@@ -129,12 +165,19 @@ fn execute_node(
         IndexNode::Rule(index) => {
             updated.clear();
 
-            if replaces[*index].get_match_and_update_state(state, rng, updated) {
+            if let Some(m) = replaces[*index].get_match_and_update_state(state, rng, updated) {
                 for (i, replace) in replaces.iter_mut().enumerate() {
                     if !interactions[*index][i] {
                         continue;
                     }
-                    replace.update_matches(state, updated);
+
+                    replace.update_matches(
+                        state,
+                        m.index,
+                        &interactions_2[i][*index][m.permutation as usize],
+                    );
+
+                    //replace.update_matches_old(state, &updated);
                 }
 
                 true
@@ -144,7 +187,15 @@ fn execute_node(
         }
         IndexNode::Markov(nodes) => {
             for node in nodes {
-                if execute_node(node, state, replaces, interactions, rng, updated) {
+                if execute_node(
+                    node,
+                    state,
+                    replaces,
+                    interactions,
+                    interactions_2,
+                    rng,
+                    updated,
+                ) {
                     return true;
                 }
             }
@@ -164,6 +215,7 @@ fn execute_node(
                     state,
                     replaces,
                     interactions,
+                    interactions_2,
                     rng,
                     updated,
                 )
@@ -294,12 +346,14 @@ fn sample_until_valid<T, F: FnMut(&T, &mut SmallRng) -> bool>(
     values: &mut Vec<T>,
     rng: &mut SmallRng,
     mut valid: F,
-) -> Option<T> {
+) -> Option<(T, u32)> {
+    let mut iters = 0;
     while !values.is_empty() {
         let index = rng.gen_range(0..values.len());
         let value = values.swap_remove(index);
+        iters += 1;
         if valid(&value, rng) {
-            return Some(value);
+            return Some((value, iters));
         }
     }
 
@@ -346,15 +400,8 @@ fn execute_rule_all(state: &mut Array2D<&mut [u8]>, replaces: &mut [Replace]) {
 
             let to = &rep.permutations[m.permutation as usize].to;
 
-            for y in 0..to.height {
-                for x in 0..to.width {
-                    let v = to.inner[to.width * y + x];
-                    let i = m.index as usize + x + y * state.width;
-                    if v == WILDCARD {
-                        continue;
-                    }
-                    state.put(i, v);
-                }
+            for (i, v) in to.non_wildcard_values_in_state(state.width) {
+                state.put(m.index as usize + i, v);
             }
         }
     }
@@ -367,12 +414,13 @@ struct Replace {
     potential_matches: Vec<Match>,
     from_values: HashSet<u8>,
     to_values: HashSet<u8>,
+    reinit: bool,
 }
 
 impl Replace {
     fn new(
         from: &[u8],
-        to: &[u8],
+        to: &mut [u8],
         width: usize,
         allow_rot90: bool,
         allow_vertical_flip: bool,
@@ -380,13 +428,32 @@ impl Replace {
     ) -> Self {
         let height = from.len() / width;
 
+        // Small optimization to reduce the interaction between patterns.
+        for i in 0..from.len() {
+            if from[i] == to[i] {
+                to[i] = WILDCARD;
+            }
+        }
+
         let pair = ArrayPair {
             to: Array2D::new(to, width),
             from: Array2D::new(from, width),
         };
 
-        let from_values: HashSet<u8> = pair.from.inner.iter().copied().collect();
-        let to_values: HashSet<u8> = pair.to.inner.iter().copied().collect();
+        let from_values: HashSet<u8> = pair
+            .from
+            .inner
+            .iter()
+            .copied()
+            .filter(|&v| v != WILDCARD)
+            .collect();
+        let to_values: HashSet<u8> = pair
+            .to
+            .inner
+            .iter()
+            .copied()
+            .filter(|&v| v != WILDCARD)
+            .collect();
 
         // Get a set of unique permutations.
         let mut permutations = HashSet::new();
@@ -414,6 +481,7 @@ impl Replace {
             potential_matches: Default::default(),
             from_values,
             to_values,
+            reinit: false,
         }
     }
 
@@ -425,11 +493,11 @@ impl Replace {
     ) -> Self {
         let (from, to) = string.split_once('=').unwrap();
         let (from, from_len, from_width) = pattern_from_chars(from);
-        let (to, to_len, to_width) = pattern_from_chars(to);
+        let (mut to, to_len, to_width) = pattern_from_chars(to);
         assert_eq!(from_width, to_width);
         Self::new(
             &from[..from_len],
-            &to[..to_len],
+            &mut to[..to_len],
             from_width,
             allow_rot90,
             allow_vertical_flip,
@@ -458,35 +526,85 @@ impl Replace {
         state: &mut Array2D<&mut [u8]>,
         rng: &mut SmallRng,
         updated: &mut Vec<u32>,
-    ) -> bool {
+    ) -> Option<Match> {
+        if self.reinit {
+            self.store_initial_matches(state);
+            self.reinit = false;
+        }
+
         let m = match sample_until_valid(&mut self.potential_matches, rng, |&m, _| {
             match_pattern(&self.permutations[m.permutation as usize], state, m.index)
         }) {
-            Some(m) => m,
-            None => return false,
+            Some((m, iters)) => {
+                // If it took more than 500 attempts to find a match
+                // then just re initialize the whole thing next time.
+                self.reinit = iters > 500;
+                m
+            }
+            None => return None,
         };
 
         let to = &self.permutations[m.permutation as usize].to;
 
-        for y in 0..to.height {
-            for x in 0..to.width {
-                let v = to.inner[to.width * y + x];
-                let i = m.index as usize + x + y * state.width;
-                if v == WILDCARD {
-                    continue;
-                }
-                if state.put(i, v) {
-                    updated.push(i as u32);
-                }
-            }
+        for (i, v) in to.non_wildcard_values_in_state(state.width) {
+            state.put(m.index as usize + i, v);
+            updated.push(m.index + i as u32);
         }
-
-        true
+        Some(m)
     }
 
-    fn update_matches(&mut self, state: &Array2D<&mut [u8]>, updated_cells: &[u32]) {
-        for &index in updated_cells {
-            for (i, permutation) in self.permutations.iter().enumerate() {
+    // Note: doing things this way can be slightly slower than
+    // `update_matches_old` in the case of small patterns (river, dungeon (pathfinding)). It's much
+    // faster for large patterns though (tetris).
+    fn update_matches(
+        &mut self,
+        state: &Array2D<&mut [u8]>,
+        index: u32,
+        interactions_for_permutation: &[Interactions],
+    ) {
+        for (permutation_index, permutation) in self.permutations.iter().enumerate() {
+            let interactions = &interactions_for_permutation[permutation_index];
+
+            for &(x, y) in interactions.full_matches.iter() {
+                let index = index + state.width as u32 * y as u32 + x as u32;
+
+                // This should always be the case.
+                debug_assert!(match_pattern(&permutation, state, index));
+
+                self.potential_matches.push(Match {
+                    index,
+                    permutation: permutation_index as _,
+                });
+            }
+
+            for &(x, y) in interactions.partial_matches.iter() {
+                let x = (index % state.width as u32) as i16 + x as i16;
+                let y = (index / state.width as u32) as i16 + y as i16;
+
+                // Don't need to do this as things will overflow otherwise, but
+                // that feels like asking for trouble.
+                if x < 0 || y < 0 {
+                    continue;
+                }
+
+                let index = state.width as u32 * y as u32 + x as u32;
+
+                // This check is actually an optimisation, as not checking inputs makes the sampling so much slower. Try it!
+                if !match_pattern(permutation, state, index) {
+                    continue;
+                }
+
+                self.potential_matches.push(Match {
+                    index,
+                    permutation: permutation_index as _,
+                });
+            }
+        }
+    }
+
+    fn update_matches_old(&mut self, state: &Array2D<&mut [u8]>, updated_cells: &[u32]) {
+        for (i, permutation) in self.permutations.iter().enumerate() {
+            for &index in updated_cells {
                 for x in 0..permutation.to.width {
                     for y in 0..permutation.to.height {
                         let index = index - x as u32 - (state.width * y) as u32;
@@ -501,5 +619,109 @@ impl Replace {
                 }
             }
         }
+    }
+}
+
+// A list of known match/interactions between two permutations of two patterns.
+#[derive(Default, Debug)]
+struct Interactions {
+    // The locations where a pattern's input fits entirely within another
+    // pattern's output. These subsequently don't need to be checked when inserting
+    // into the match list. Kinda like pre-flight checkins or whatever.
+    full_matches: Vec<(u8, u8)>,
+    // Locations where there could be a match due to going off the sides of the
+    // pattern's output or thanks to wildcards, but where we aren't sure. These need to be checked.
+    partial_matches: Vec<(i8, i8)>,
+}
+
+// is a(.from) inside b(.to)?
+fn get_interactions_between(input_of: &Replace, output_of: &Replace) -> Vec<Vec<Interactions>> {
+    let mut interactions = Vec::new();
+
+    // Loop through permutation pairs.
+    for (_, output_of) in output_of.permutations.iter().enumerate() {
+        let mut permutation_interactions = Vec::new();
+
+        for (_, input_of) in input_of.permutations.iter().enumerate() {
+            let mut interactions = Interactions::default();
+
+            // Loop through starting offsets. These can be negative. e.g. if both input_of and output_of are 2x2,
+            // this is -1 .. 2 .
+            for y in 1 - input_of.height() as i8..output_of.height() as i8 {
+                'outer: for x in 1 - input_of.width() as i8..output_of.width() as i8 {
+                    // Record whether the interaction is totally within the bounds of b.
+                    let mut is_in_bounds = true;
+                    let mut wildcards_only = true;
+
+                    for input_y in 0 as _..input_of.height() {
+                        for input_x in 0 as _..input_of.width() {
+                            let output_x = x + input_x as i8;
+                            let output_y = y + input_y as i8;
+
+                            if output_x < 0
+                                || output_y < 0
+                                || output_x >= output_of.width() as _
+                                || output_y >= output_of.height() as _
+                            {
+                                is_in_bounds = false;
+                                continue;
+                            }
+
+                            let mut output = output_of.to.get(output_x as _, output_y as _);
+                            // If the b.to value is a wildcard then look into what
+                            // b.from was.
+                            if output == WILDCARD {
+                                output = output_of.from.get(output_x as _, output_y as _);
+                            }
+                            // If _that_ was a wildcard then we assume a match.
+                            if output == WILDCARD {
+                                continue;
+                            }
+
+                            // Note that the pattern isn't all wildcards.
+                            wildcards_only = false;
+
+                            let input = input_of.from.get(input_x, input_y);
+
+                            // If the expected value is a wildcard then it's fine.
+                            // If it's not and isn't the expected value then there isn't a match.
+                            if input != WILDCARD && input != output {
+                                continue 'outer;
+                            }
+                        }
+                    }
+
+                    // If the match consists soley of wildcards, then it doesn't count.
+                    if wildcards_only {
+                        continue;
+                    }
+
+                    if is_in_bounds {
+                        interactions.full_matches.push((x as _, y as _));
+                    } else {
+                        interactions.partial_matches.push((x, y));
+                    }
+                }
+            }
+
+            permutation_interactions.push(interactions);
+        }
+
+        interactions.push(permutation_interactions);
+    }
+
+    interactions
+}
+
+fn _print_ascii(array: &Array2D) {
+    for row in array.rows() {
+        for &v in row {
+            if v == 255 {
+                print!("*");
+            } else {
+                print!("{}", PALETTE[v as usize]);
+            }
+        }
+        println!();
     }
 }
