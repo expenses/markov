@@ -565,29 +565,31 @@ impl Replace {
     }
 
     fn update_matches(&mut self, state: &Array2D<&mut [u8]>, updated_cells: &[u32]) {
-        //let mut bb = BoundingBox::new();
+        let mut bb = BoundingBox::new();
 
         for &index in updated_cells {
-            //bb.insert(index as _, state.width(), state.height());
+            bb.insert(index as _, state.width(), state.height());
+        }
 
-            for (i, permutation) in self.permutations.iter().enumerate() {
-                for z in 0..permutation.depth() {
-                    for y in 0..permutation.height() {
-                        for x in 0..permutation.width() {
-                            let offset =
-                                (state.width() * state.height() * z + state.width() * y + x) as u32;
-                            if offset > index {
-                                continue;
-                            }
-                            let index = index - offset;
-                            if !match_pattern(permutation, state, index) {
-                                continue;
-                            }
-                            self.potential_matches.push(Match {
-                                index,
-                                permutation: i as u8,
-                            });
+        for (i, permutation) in self.permutations.iter().enumerate() {
+            //dbg!(bb.min[2].saturating_sub(permutation.depth())..bb.max[2] + 1);
+            for z in bb.min[2].saturating_sub(permutation.depth() - 1)..bb.max[2] + 1 {
+                for y in bb.min[1].saturating_sub(permutation.height() - 1)..bb.max[1] + 1 {
+                    for x in bb.min[0].saturating_sub(permutation.width() - 1)..bb.max[0] + 1 {
+                        //dbg!(x, y, z);
+                        let offset =
+                            (state.width() * state.height() * z + state.width() * y + x) as u32;
+                        //if offset > index {
+                        //    continue;
+                        //}
+                        let index = offset;//index - offset;
+                        if !match_pattern(permutation, state, index) {
+                            continue;
                         }
+                        self.potential_matches.push(Match {
+                            index,
+                            permutation: i as u8,
+                        });
                     }
                 }
             }
