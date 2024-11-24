@@ -1,9 +1,9 @@
 # coding: utf-8
 from util import *
-
-dim = 128
+import sys
+dim = int(sys.argv[1])
 arr = np.zeros((dim, dim), dtype=np.uint8)
-ffmpeg = FfmpegOutput("out.avi", width=dim, height=dim, skip=300)
+ffmpeg = FfmpegOutput("out.avi", width=dim, height=dim, skip=40)
 
 
 def sand(c):
@@ -25,7 +25,7 @@ def sand(c):
                 ),
             ),
             PatternWithOptions(
-                f"{c},0=0,{c}", allow_dimension_shuffling=False, allow_flip=False
+                f"{c},0=0,{c}", apply_all=True, allow_dimension_shuffling=False, allow_flip=False
             ),
         ),
     )

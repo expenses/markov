@@ -188,7 +188,6 @@ fn execute_node<'a>(
             let applied = if replaces[*index].settings.apply_all {
                 let mut any_applied = false;
 
-                {
                     let replace = &mut replaces[*index];
 
                     replace.store_initial_matches(state);
@@ -212,14 +211,6 @@ fn execute_node<'a>(
                             state.put(m.index as usize + i, v);
                         }
                     }
-                }
-
-                for (i, replace) in replaces.iter_mut().enumerate() {
-                    if !interactions[*index][i] {
-                        continue;
-                    }
-                    replace.store_initial_matches(state);
-                }
 
                 any_applied
             } else {
@@ -641,7 +632,7 @@ impl Replace {
         rng: &mut SmallRng,
         updated: &mut Vec<u32>,
     ) -> bool {
-        if self.reinit {
+        if self.reinit || self.potential_matches.is_empty() {
             self.store_initial_matches(state);
             self.reinit = false;
         }
