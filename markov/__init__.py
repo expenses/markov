@@ -191,6 +191,23 @@ def rot_z(d):
     return d
 
 
+MIRRORED={
+        "x":"y",
+        "y":"x",
+
+        "negx":"negy",
+        "negy":"negx",
+        }
+
+FLIPPED={
+        "x":"negx",
+        "y":"negy",
+        "negx":"x",
+        "negy":"y",
+
+        }
+
+'''
 class Tileset:
     def __init__(self, wfc):
         self.wfc = wfc
@@ -205,7 +222,7 @@ class Tileset:
         connect_to_tags = {}
 
         for dir, dir_tags in tags.items():
-            if type(dir_tags) is not list:
+            if type(dir_tags) is not list and type(dir_tags) is not set:
                 dir_tags = [dir_tags]
             tile_tags[dir] = []
             connect_to_tags[dir] = []
@@ -214,9 +231,11 @@ class Tileset:
                 if type(tag) is str:
                     tag = (tag, tag)
                 tile_tag, connect_to_tag = tag
-                # print(tile_tag, connect_to_tag)
-                tile_tags[dir].append(tile_tag)
-                connect_to_tags[dir].append(connect_to_tag)
+                #print(tile_tag, connect_to_tag)
+                if tile_tag is not None:
+                    tile_tags[dir].append(tile_tag)
+                if connect_to_tag is not None:
+                    connect_to_tags[dir].append(connect_to_tag)
 
         self.tiles[tile] = connect_to_tags
 
@@ -245,7 +264,7 @@ class Tileset:
             for dir, dir_tags in tags.items():
                 for tag in dir_tags:
                     if not (dir, tag) in self.tag_dir_to_tiles:
-                        print(f"missing ({dir}, {tag})")
+                        #print(f"missing ({dir}, {tag})")
                         continue
 
                     for to in self.tag_dir_to_tiles[(dir, tag)]:
@@ -256,7 +275,7 @@ class Tileset:
                         """
                         # print(f"connecting {frm} to {to} along {dir}")
                         self.wfc.connect(frm, to, [dir])
-
+'''
 
 def setup_map_tiles(count, shape):
     tiles = {}
