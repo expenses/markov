@@ -18,6 +18,38 @@
         python-deps = ps: [ps.ipython ps.numpy ps.pillow ps.scikit-image ps.ffmpeg-python ps.zstandard ps.openusd];
       in rec {
         packages = rec {
+          babble = with pkgs;
+            stdenv.mkDerivation {
+              src = fetchGit {
+                url = "https://github.com/anderslanglands/babble";
+                rev = "452e94ee0cc56e4ed5e0c7f8a3aa5f9a4ad05d88";
+                submodules = true;
+              };
+              name = "babble";
+              nativeBuildInputs = [cmake];
+              buildInputs = [llvmPackages_17.clang-unwrapped llvmPackages_17.libllvm];
+              patches = [./nix/babble.patch];
+              cmakeFlags = ["-DBBL_CLANG_INCLUDE_DIR=${llvmPackages_17.clang-unwrapped.lib}/lib/clang/17/include"];
+            };
+            openusd-minimal-static = /*with pkgs; stdenv.mkDerivation {
+                name = "openusd-minimal";
+                inherit (openusd) src;
+                nativeBuildInputs = [ cmake ninja ];
+                buildInputs = [tbb opensubdiv];
+                cmakeFlags = [
+                  (lib.cmakeBool "PXR_ENABLE_PYTHON_SUPPORT" false)
+                  #(lib.cmakeBool "BUILD_SHARED_LIBS" true)
+                  (lib.cmakeBool "PXR_BUILD_TESTS" false)
+                  (lib.cmakeBool "PXR_BUILD_EXAMPLES" false)
+                  (lib.cmakeBool "PXR_BUILD_IMAGING" false)
+                  #(lib.cmakeBool "PXR_BUILD_MONOLITHIC" false)
+                  (lib.cmakeBool "PXR_BUILD_EMBREE_PLUGIN" false)
+                  (lib.cmakeBool "PXR_BUILD_DRACO_PLUGIN" false)
+                  (lib.cmakeBool "PXR_BUILD_OPENIMAGEIO_PLUGIN" false)
+                  (lib.cmakeBool "PXR_ENABLE_MATERIALX_SUPPORT" false)
+                  (lib.cmakeBool "PXR_ENABLE_VULKAN_SUPPORT" false)
+                ];
+                }*/ pkgs.openusd;
           MarkovJunior = with pkgs;
             buildDotnetModule {
               src = ./MarkovJunior;
@@ -121,6 +153,14 @@
             runScript = "bash";
           })
           .env;
+        devShells.rust-openusd = with pkgs; mkShell {
+          buildInputs = [
+            packages.babble python3
+            packages.openusd-minimal-static
+            ninja cmake
+          ];
+          #env.LD_LIBRARY_PATH = lib.makeLibraryPath [libGL xorg.libX11];
+        };
       }
     );
 }

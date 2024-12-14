@@ -1,0 +1,31 @@
+diff --git a/bbl/CMakeLists.txt b/bbl/CMakeLists.txt
+index e3d425b..432ede0 100644
+--- a/bbl/CMakeLists.txt
++++ b/bbl/CMakeLists.txt
+@@ -150,12 +150,16 @@ install(
+     ${CMAKE_INSTALL_LIBDIR}/cmake/babble
+ )
+ 
++if(NOT DEFINED BBL_CLANG_INCLUDE_DIR)
++  set(BBL_CLANG_INCLUDE_DIR ${CLANG_INSTALL_PREFIX}/lib/clang/${LLVM_VERSION_MAJOR}/include)
++endif()
++
+ # copy the clang resource dir to the installation so we can pick up the headers
+ # first need to extract the major version to get the right path from the
+ # llvm installation
+ install(
+   DIRECTORY
+-    ${CLANG_INSTALL_PREFIX}/lib/clang/${LLVM_VERSION_MAJOR}/include
++    ${BBL_CLANG_INCLUDE_DIR}
+     DESTINATION
+       ${CMAKE_INSTALL_LIBDIR}/resource
+ )
+@@ -163,7 +167,7 @@ install(
+ # also copy it to the binary dir so we can pick it up in the test runner
+ file(
+   COPY
+-    ${CLANG_INSTALL_PREFIX}/lib/clang/${LLVM_VERSION_MAJOR}/include
++    ${BBL_CLANG_INCLUDE_DIR}
+   DESTINATION
+     ${CMAKE_BINARY_DIR}
+ )
