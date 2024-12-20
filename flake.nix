@@ -38,7 +38,7 @@
             buildPhaseCargoCommand = "maturin build --release";
             installPhaseCommand = "mv target/wheels $out";
             doCheck = false;
-            nativeBuildInputs = [pkgs.python3 pkgs.maturin pkgs.rustc];
+            nativeBuildInputs = with pkgs; [python3 maturin rustc cmake];
           };
           python-lib = with pkgs;
             python3Packages.buildPythonPackage {
@@ -131,6 +131,7 @@
               black
               linuxPackages_latest.perf
               packages.gen-flamegraph
+              cmake
             ]);
             runScript = "bash -c '. env/bin/activate && bash'";
           })

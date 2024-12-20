@@ -23,6 +23,7 @@ num-traits = "0.2.19"
 fnv = "1.0.7"
 hashbrown = "0.15.2"
 wfc = { path = "wfc" }
+flate2 = { version = "1.0.35", default-features = false, features = ["zlib-ng"] }
 
 [build-dependencies]
 xml = "0.8.20"
