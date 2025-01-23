@@ -5,7 +5,6 @@
   inputs.nixpkgs.url = "github:nixos/nixpkgs/nixos-unstable";
   inputs.crane.url = "github:ipetkov/crane";
   inputs.erosanix.url = "github:emmanuelrosa/erosanix";
-  inputs.nixpkgs-slang.url = "github:expenses/nixpkgs/shader-slang";
 
   inputs.fenix = {
     url = "github:nix-community/fenix";
@@ -19,12 +18,10 @@
     crane,
     erosanix,
     fenix,
-    nixpkgs-slang,
   }:
     flake-utils.lib.eachDefaultSystem (
       system: let
         pkgs = nixpkgs.legacyPackages.${system};
-        pkgs-slang = nixpkgs-slang.legacyPackages.${system};
         craneLib = crane.mkLib pkgs;
         python-deps = ps: [ps.ipython ps.numpy ps.pillow ps.scikit-image ps.ffmpeg-python ps.zstandard ps.openusd];
       in rec {
@@ -218,12 +215,12 @@
         devShells.wgpu = with pkgs;
           mkShell rec {
             nativeBuildInputs = [
-              (pkgs-slang.shader-slang.overrideAttrs (attrs: {
+              (shader-slang.overrideAttrs (attrs: {
                 src = fetchFromGitHub {
                   owner = "shader-slang";
                   repo = "slang";
-                  rev = "f3d7aa6ce964e3f8e2550886dae24ee6cba7ae9c";
-                  hash = "sha256-0M1xB+PaijdQ0TzqKBWQhC+2688OyUIUR8cO8425z9k=";
+                  rev = "a9ce7520e5f1b97b09e5de69455258bef55e10d2";
+                  hash = "sha256-ffB0Fer9r6sqGZztywHfV0o68Zh4dRQmdItOGqBIOPI=";
                   fetchSubmodules = true;
                 };
                 cmakeFlags = attrs.cmakeFlags ++ ["-DSLANG_RHI_ENABLE_CUDA=0"];
