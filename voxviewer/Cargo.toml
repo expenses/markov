@@ -22,10 +22,11 @@ egui = { version = "0.30.0", features = ["default_fonts"] }
 egui-winit = { version = "0.30.0", default-features = false }
 ddsfile = "0.5.2"
 rayon = "1.10.0"
-svo_dag = { path = "../svo_dag" }
+tree64 = { git = "https://github.com/expenses/tree64" }
 encase = { version = "0.9.0", features = ["glam"] }
 poll-promise = { version = "0.3.0" }
 rfd = "0.15.2"
+dot_vox = "5.1.1"
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 poll-promise = { version = "0.3.0", features = ["smol"] }

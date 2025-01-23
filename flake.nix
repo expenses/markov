@@ -233,6 +233,7 @@
               spirv-tools
               linuxPackages_latest.perf
               packages.gen-flamegraph
+              zenity
             ];
             buildInputs = [
               udev
@@ -244,6 +245,7 @@
               xorg.libXrandr # To use the x11 feature
               libxkbcommon
               wayland # To use the wayland feature
+              stdenv.cc.cc
             ];
             LD_LIBRARY_PATH = lib.makeLibraryPath buildInputs;
           };

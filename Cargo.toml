@@ -23,7 +23,7 @@ num-traits = "0.2.19"
 fnv = "1.0.7"
 hashbrown = "0.15.2"
 wfc = { path = "wfc" }
-svo_dag = { path = "svo_dag" }
+tree64 = { git = "https://github.com/expenses/tree64" }
 zstd = "0.13.2"
 dot_vox = "5.1.1"
 glam = "0.29.2"
@@ -36,4 +36,4 @@ inherits = "release"
 debug = true
 
 [workspace]
-members = [".", "svo_dag", "voxviewer", "wfc"]
+members = [".", "voxviewer", "wfc"]

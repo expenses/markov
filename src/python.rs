@@ -40,7 +40,7 @@ pub fn write_tree64(array: numpy::borrow::PyReadonlyArray3<u8>, filename: &str) 
     let h = dims[1];
     let d = dims[0];
     let slice = array.as_slice()?;
-    let dag = svo_dag::Tree64::new(slice, [w, h, d]);
+    let dag = tree64::Tree64::new((slice, [w as u32, h as u32, d as u32]));
     dag.serialize(std::fs::File::create(filename)?)?;
     Ok(())
 }

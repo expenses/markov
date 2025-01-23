@@ -57,7 +57,7 @@ struct App<'a> {
     pipelines: Pipelines,
     materials: Vec<Material>,
     egui_renderer: egui_wgpu::Renderer,
-    tree64: svo_dag::Tree64,
+    tree64: tree64::Tree64<u8>,
     selected_material: usize,
     hide_ui: bool,
     padded_uniform_buffer: encase::UniformBuffer<Vec<u8>>,
@@ -66,7 +66,7 @@ struct App<'a> {
 
 enum PromizeResult {
     Cancelled,
-    Load(svo_dag::Tree64),
+    Load(tree64::Tree64<u8>, Option<Vec<Material>>),
     Saved,
 }
 
@@ -89,31 +89,81 @@ impl App<'_> {
                 .default_width(100.0)
                 .show(ctx, |ui| {
                     egui::CollapsingHeader::new("Scene").show(ui, |ui| {
-                        if ui.button("Load").clicked {
-                            self.promise = Some(poll_promise::Promise::spawn_local(async {
-                                let browser = rfd::AsyncFileDialog::new()
-                                    .add_filter("64-tree", &["tree64"])
-                                    .add_filter("MagicaVoxel .vox", &["vox"]);
+                        let browser = || {
+                            rfd::AsyncFileDialog::new()
+                                .add_filter("64-tree", &["tree64"])
+                                .add_filter("MagicaVoxel .vox", &["vox"])
+                        };
 
-                                let file = match browser.pick_file().await {
-                                    Some(file) => file,
-                                    None => return PromizeResult::Cancelled,
-                                };
+                        ui.horizontal(|ui| {
+                            if ui.button("Load").clicked {
+                                self.promise =
+                                    Some(poll_promise::Promise::spawn_local(async move {
+                                        let file = match browser().pick_file().await {
+                                            Some(file) => file,
+                                            None => return PromizeResult::Cancelled,
+                                        };
 
-                                match file.file_name().rsplit_once('.') {
-                                    Some((_, "tree64")) => {
-                                        let bytes = file.read().await;
-                                        PromizeResult::Load(
-                                            svo_dag::Tree64::deserialize(std::io::Cursor::new(
-                                                bytes,
-                                            ))
-                                            .unwrap(),
-                                        )
-                                    }
-                                    _ => return PromizeResult::Cancelled,
-                                }
-                            }));
-                        }
+                                        match file.file_name().rsplit_once('.') {
+                                            Some((_, "tree64")) => {
+                                                let bytes = file.read().await;
+                                                PromizeResult::Load(
+                                                    tree64::Tree64::deserialize(
+                                                        std::io::Cursor::new(bytes),
+                                                    )
+                                                    .unwrap(),
+                                                    None,
+                                                )
+                                            }
+                                            Some((_, "vox")) => {
+                                                let bytes = file.read().await;
+                                                let vox = dot_vox::load_bytes(&bytes).unwrap();
+                                                PromizeResult::Load(
+                                                    tree64::Tree64::new((
+                                                        {
+                                                            let empty_slice: &[u8] = &[];
+                                                            empty_slice
+                                                        },
+                                                        [0; 3],
+                                                    )),
+                                                    Some(
+                                                        vox.palette
+                                                            .into_iter()
+                                                            .skip(1)
+                                                            .map(|colour| Material {
+                                                                base_colour: [
+                                                                    srgb_to_linear(colour.r),
+                                                                    srgb_to_linear(colour.g),
+                                                                    srgb_to_linear(colour.b),
+                                                                ],
+                                                                linear_roughness: 1.0,
+                                                                ..Default::default()
+                                                            })
+                                                            .collect(),
+                                                    ),
+                                                )
+                                            }
+                                            _ => return PromizeResult::Cancelled,
+                                        }
+                                    }));
+                            }
+
+                            if ui.button("Save").clicked {
+                                let mut vec = Vec::new();
+                                tree64.serialize(&mut vec).unwrap();
+                                self.promise =
+                                    Some(poll_promise::Promise::spawn_local(async move {
+                                        let file = match browser().save_file().await {
+                                            Some(file) => file,
+                                            None => return PromizeResult::Cancelled,
+                                        };
+
+                                        file.write(&vec).await.unwrap();
+
+                                        PromizeResult::Saved
+                                    }));
+                            }
+                        });
                     });
                     egui::CollapsingHeader::new("Edits")
                         .default_open(true)
@@ -145,7 +195,7 @@ impl App<'_> {
                                     queue.write_buffer(
                                         &pipelines.tree_nodes,
                                         range_to_upload.start as u64
-                                            * std::mem::size_of::<svo_dag::Tree64Node>() as u64,
+                                            * std::mem::size_of::<tree64::Node>() as u64,
                                         bytemuck::cast_slice(&tree64.nodes.inner[range_to_upload]),
                                     );
                                 }
@@ -163,15 +213,19 @@ impl App<'_> {
                                             * settings.edit_distance;
 
                                 let ranges = tree64.modify_nodes_in_box(
-                                    (position - settings.edit_size / 2.0).xzy().as_ivec3(),
-                                    (position + settings.edit_size / 2.0).xzy().as_ivec3(),
+                                    <[i32; 3]>::from(
+                                        (position - settings.edit_size / 2.0).xzy().as_ivec3(),
+                                    ),
+                                    <[i32; 3]>::from(
+                                        (position + settings.edit_size / 2.0).xzy().as_ivec3(),
+                                    ),
                                     value,
                                 );
                                 self.accumulated_frame_index = 0;
                                 queue.write_buffer(
                                     &pipelines.tree_nodes,
                                     ranges.nodes.start as u64
-                                        * std::mem::size_of::<svo_dag::Tree64Node>() as u64,
+                                        * std::mem::size_of::<tree64::Node>() as u64,
                                     bytemuck::cast_slice(&tree64.nodes.inner[ranges.nodes]),
                                 );
                                 copy_aligned(
@@ -184,10 +238,10 @@ impl App<'_> {
 
                             ui.horizontal(|ui| {
                                 if ui.button("Delete").clicked() {
-                                    edit(0);
+                                    edit(None);
                                 }
                                 if ui.button("Create").clicked() {
-                                    edit(self.selected_material as u8 + 1);
+                                    edit(Some(self.selected_material as u8 + 1));
                                 }
                             });
                         });
@@ -442,7 +496,7 @@ impl App<'_> {
                 tree: TreeUniforms {
                     scale: root_state.num_levels as u32 * 2,
                     root_node_index: root_state.index,
-                    offset: root_state.offset.into(),
+                    offset: <[i32; 3]>::from(root_state.offset).into(),
                 },
                 resolution: glam::UVec2::new(self.config.width, self.config.height),
 
@@ -483,8 +537,17 @@ impl winit::application::ApplicationHandler for App<'_> {
             match promise.try_take() {
                 Err(promise) => self.promise = Some(promise),
                 Ok(value) => {
-                    if let PromizeResult::Load(value) = value {
-                        self.tree64 = value;
+                    if let PromizeResult::Load(tree64, materials) = value {
+                        //self.tree64 = tree64;
+                        self.accumulated_frame_index = 0;
+                        if let Some(materials) = materials {
+                            self.materials = materials;
+                            self.queue.write_buffer(
+                                &self.pipelines.materials,
+                                0,
+                                bytemuck::cast_slice(&self.materials),
+                            );
+                        }
                     }
                 }
             }
@@ -903,16 +966,6 @@ async fn run(event_loop: EventLoop<()>, window: Window) {
         (172, 159, 136, 255),
     ];
 
-    fn srgb_to_linear(value: u8) -> f32 {
-        let value = value as f32 / 255.0;
-
-        if value <= 0.04045 {
-            value / 12.92
-        } else {
-            ((value + 0.055) / 1.055).powf(2.4)
-        }
-    }
-
     let mut materials = palette
         .map(|(r, g, b, _)| Material {
             // Boost values for brighter bounces.
@@ -932,7 +985,7 @@ async fn run(event_loop: EventLoop<()>, window: Window) {
         });
     }
 
-    let tree64 = svo_dag::Tree64::deserialize(std::io::Cursor::new(
+    let tree64 = tree64::Tree64::deserialize(std::io::Cursor::new(
         load_resource_bytes("sponza.tree64").await,
     ))
     .unwrap();
@@ -984,6 +1037,16 @@ async fn run(event_loop: EventLoop<()>, window: Window) {
     };
 
     event_loop.run_app(&mut app).unwrap()
+}
+
+fn srgb_to_linear(value: u8) -> f32 {
+    let value = value as f32 / 255.0;
+
+    if value <= 0.04045 {
+        value / 12.92
+    } else {
+        ((value + 0.055) / 1.055).powf(2.4)
+    }
 }
 
 pub fn main() {
@@ -1053,38 +1116,6 @@ impl Default for Settings {
             show_heatmap: false,
             edit_distance: 10.0,
             edit_size: 10.0,
-        }
-    }
-}
-
-#[derive(Clone, Copy, bytemuck::Zeroable, bytemuck::Pod)]
-#[repr(C)]
-struct Vec3A {
-    inner: glam::Vec3,
-    padding: u32,
-}
-
-impl From<glam::Vec3> for Vec3A {
-    fn from(vec: glam::Vec3) -> Self {
-        Self {
-            inner: vec,
-            padding: 0,
-        }
-    }
-}
-
-#[derive(Clone, Copy, bytemuck::Zeroable, bytemuck::Pod)]
-#[repr(C)]
-struct IVec3A {
-    inner: glam::IVec3,
-    padding: u32,
-}
-
-impl From<glam::IVec3> for IVec3A {
-    fn from(vec: glam::IVec3) -> Self {
-        Self {
-            inner: vec,
-            padding: 0,
         }
     }
 }
