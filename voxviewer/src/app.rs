@@ -1,16 +1,79 @@
-use crate::gpu_resources::{Pipelines, Resizables};
+use crate::gpu_resources::Pipelines;
 use crate::{
     copy_aligned, srgb_to_linear, CameraUniforms, Material, PromizeResult, Settings, SunUniforms,
     TreeUniforms, Uniforms,
 };
 use dolly::prelude::*;
 use glam::swizzles::Vec3Swizzles;
+use std::sync::Arc;
 use winit::event::WindowEvent;
 use winit::event::{DeviceEvent, ElementState, KeyEvent, MouseButton, MouseScrollDelta};
 use winit::event_loop::ActiveEventLoop;
 use winit::keyboard::PhysicalKey;
 use winit::window::Window;
 use winit::window::WindowId;
+
+struct Cached<T> {
+    inner: arc_swap::ArcSwap<T>,
+}
+
+impl<T: Clone> Cached<T> {
+    fn new(value: T) -> Self {
+        Self {
+            inner: arc_swap::ArcSwap::from_pointee(value),
+        }
+    }
+
+    fn get<C: Fn(&T) -> bool, N: Fn() -> T>(&self, check: C, create: N) -> T {
+        self.inner.rcu(|value| {
+            if check(value) {
+                value.clone()
+            } else {
+                Arc::new(create())
+            }
+        });
+
+        self.inner.load().as_ref().clone()
+    }
+}
+
+pub struct CachedTextures {
+    hdr: Cached<wgpu::Texture>,
+    trace_bind_groups: Cached<(u32, u32, FlipFlop<wgpu::BindGroup>)>,
+    blit_bind_groups: Cached<(u32, u32, FlipFlop<wgpu::BindGroup>)>,
+}
+
+impl CachedTextures {
+    pub fn new(device: &wgpu::Device) -> Self {
+        let hdr = device.create_texture(&wgpu::TextureDescriptor {
+            label: None,
+            size: wgpu::Extent3d::default(),
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::R8Unorm,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING,
+            view_formats: &[],
+        });
+        let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: None,
+            entries: &[],
+        });
+        let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: None,
+            layout: &bind_group_layout,
+            entries: &[],
+        });
+
+        let flip_flop_bind_groups = FlipFlop([bind_group.clone(), bind_group.clone()]);
+
+        Self {
+            hdr: Cached::new(hdr.clone()),
+            trace_bind_groups: Cached::new((0, 0, flip_flop_bind_groups.clone())),
+            blit_bind_groups: Cached::new((0, 0, flip_flop_bind_groups.clone())),
+        }
+    }
+}
 
 pub struct App<'a> {
     pub egui_state: egui_winit::State,
@@ -25,7 +88,6 @@ pub struct App<'a> {
     pub frame_index: u32,
     pub settings: Settings,
     pub camera: CameraRig,
-    pub resizables: Resizables,
     pub pipelines: Pipelines,
     pub materials: Vec<Material>,
     pub egui_renderer: egui_wgpu::Renderer,
@@ -34,6 +96,7 @@ pub struct App<'a> {
     pub hide_ui: bool,
     pub padded_uniform_buffer: encase::UniformBuffer<Vec<u8>>,
     pub promise: Option<poll_promise::Promise<PromizeResult>>,
+    pub cached_textures: CachedTextures,
 }
 
 impl App<'_> {
@@ -280,6 +343,13 @@ impl App<'_> {
                             .changed();
                     });
                     egui::CollapsingHeader::new("Settings").show(ui, |ui| {
+                        reset_accumulation |= ui
+                            .add(egui::Slider::new(
+                                &mut settings.resolution_scaling,
+                                0.025..=2.0,
+                            ))
+                            .changed();
+
                         if ui.button("Reset").clicked() {
                             *settings = Settings::default();
                             reset_accumulation = true;
@@ -423,6 +493,12 @@ impl App<'_> {
         (tris, screen_descriptor)
     }
 
+    fn hdr_resolution(&self) -> glam::UVec2 {
+        (glam::UVec2::new(self.config.width, self.config.height).as_vec2()
+            * self.settings.resolution_scaling)
+            .as_uvec2()
+    }
+
     fn write_uniforms(
         &mut self,
         transform: dolly::transform::Transform<dolly::handedness::RightHanded>,
@@ -465,8 +541,7 @@ impl App<'_> {
                     root_node_index: root_state.index,
                     offset: <[i32; 3]>::from(root_state.offset).into(),
                 },
-                resolution: glam::UVec2::new(self.config.width, self.config.height),
-
+                resolution: self.hdr_resolution(),
                 settings: (settings.enable_shadows as i32)
                     | (settings.accumulate_samples as i32) << 1
                     | (settings.show_heatmap as i32) << 2,
@@ -611,12 +686,7 @@ impl winit::application::ApplicationHandler for App<'_> {
                 self.config.width = new_size.width.max(1);
                 self.config.height = new_size.height.max(1);
                 self.surface.configure(&self.device, &self.config);
-                self.resizables = Resizables::new(
-                    new_size.width.max(1),
-                    new_size.height.max(1),
-                    &self.device,
-                    &self.pipelines,
-                );
+
                 // On macos the window needs to be redrawn manually after resizing
                 self.window.request_redraw();
             }
@@ -660,94 +730,332 @@ impl winit::application::ApplicationHandler for App<'_> {
                     .surface
                     .get_current_texture()
                     .expect("Failed to acquire next swap chain texture");
-                let view = frame.texture.create_view(&wgpu::TextureViewDescriptor {
-                    format: Some(view_format),
-                    ..Default::default()
-                });
+
                 let mut encoder = self
                     .device
                     .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
                 let (tessellated, screen_descriptor) = self.get_egui_render_state(&mut encoder);
                 let egui_cmd_buf = encoder.finish();
 
-                let (cmd_buf_a, cmd_buf_b) = rayon::join(
-                    || {
-                        let mut encoder =
-                            self.device
-                                .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                                    label: None,
-                                });
+                //let view = (&frame).texture.clone();
 
-                        let mut compute_pass =
-                            encoder.begin_compute_pass(&wgpu::ComputePassDescriptor::default());
-
-                        compute_pass.set_pipeline(&self.pipelines.trace);
-                        compute_pass.set_bind_group(
-                            0,
-                            &self.resizables.trace_bind_groups
-                                [self.accumulated_frame_index as usize % 2],
-                            &[],
-                        );
-
-                        let workgroup_size = 8;
-
-                        compute_pass.dispatch_workgroups(
-                            self.config.width.div_ceil(workgroup_size),
-                            self.config.height.div_ceil(workgroup_size),
-                            1,
-                        );
-
-                        drop(compute_pass);
-
-                        encoder.finish()
-                    },
-                    || {
-                        let mut encoder =
-                            self.device
-                                .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                                    label: None,
-                                });
-
-                        let mut rpass = encoder
-                            .begin_render_pass(&wgpu::RenderPassDescriptor {
-                                label: None,
-                                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                                    view: &view,
-                                    resolve_target: None,
-                                    ops: wgpu::Operations {
-                                        load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
-                                        store: wgpu::StoreOp::Store,
-                                    },
-                                })],
-                                depth_stencil_attachment: None,
-                                timestamp_writes: None,
-                                occlusion_query_set: None,
-                            })
-                            .forget_lifetime();
-                        rpass.set_pipeline(&self.pipelines.blit_srgb);
-                        rpass.set_bind_group(
-                            0,
-                            &self.resizables.blit_bind_groups
-                                [(self.accumulated_frame_index) as usize % 2],
-                            &[],
-                        );
-                        rpass.draw(0..3, 0..1);
-                        if !self.hide_ui {
-                            self.egui_renderer
-                                .render(&mut rpass, &tessellated, &screen_descriptor);
-                        }
-
-                        drop(rpass);
-
-                        encoder.finish()
-                    },
+                let mut command_buffers = Backend {
+                    device: &self.device,
+                    trace_pipeline: &self.pipelines.trace,
+                    blit_pipeline: &self.pipelines.blit_srgb,
+                    egui_renderer: &self.egui_renderer,
+                    tessellated: &tessellated,
+                    screen_descriptor: &screen_descriptor,
+                    view_format,
+                    cached_textures: &self.cached_textures,
+                    pipelines: &self.pipelines,
+                }
+                .run_frame(
+                    frame.texture.clone(),
+                    self.frame_index,
+                    self.hdr_resolution(),
+                    self.hide_ui,
                 );
 
-                self.queue.submit([egui_cmd_buf, cmd_buf_a, cmd_buf_b]);
+                command_buffers.insert(0, egui_cmd_buf);
+
+                self.queue.submit(command_buffers);
                 frame.present();
             }
             WindowEvent::CloseRequested => event_loop.exit(),
             _ => {}
         }
+    }
+}
+
+struct Backend<'a> {
+    device: &'a wgpu::Device,
+    trace_pipeline: &'a wgpu::ComputePipeline,
+    blit_pipeline: &'a wgpu::RenderPipeline,
+    egui_renderer: &'a egui_wgpu::Renderer,
+    tessellated: &'a [egui::ClippedPrimitive],
+    screen_descriptor: &'a egui_wgpu::ScreenDescriptor,
+    view_format: wgpu::TextureFormat,
+    cached_textures: &'a CachedTextures,
+    pipelines: &'a Pipelines,
+}
+
+impl RenderGraphBackend for Backend<'_> {
+    type CommandBuffer = wgpu::CommandBuffer;
+    type Texture = wgpu::Texture;
+}
+
+impl TonemapGraph for Backend<'_> {
+    fn trace(&self, texture: Self::Texture, frame_index: u32) -> Self::CommandBuffer {
+        let trace_data = self
+            .cached_textures
+            .trace_bind_groups
+            .get(
+                |&(current_width, current_height, _)| {
+                    current_width == texture.width() && current_height == texture.height()
+                },
+                || {
+                    let a_view = texture.create_view(&wgpu::TextureViewDescriptor {
+                        base_array_layer: 0,
+                        array_layer_count: Some(1),
+                        dimension: Some(wgpu::TextureViewDimension::D2),
+                        ..Default::default()
+                    });
+                    let b_view = texture.create_view(&wgpu::TextureViewDescriptor {
+                        base_array_layer: 1,
+                        array_layer_count: Some(1),
+                        dimension: Some(wgpu::TextureViewDimension::D2),
+                        ..Default::default()
+                    });
+
+                    let create_trace_bind_group = |a: &wgpu::TextureView, b: &wgpu::TextureView| {
+                        self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+                            label: None,
+                            layout: &self.pipelines.trace_bgl,
+                            entries: &[
+                                wgpu::BindGroupEntry {
+                                    binding: 0,
+                                    resource: self.pipelines.uniform_buffer.as_entire_binding(),
+                                },
+                                wgpu::BindGroupEntry {
+                                    binding: 1,
+                                    resource: self.pipelines.tree_nodes.as_entire_binding(),
+                                },
+                                wgpu::BindGroupEntry {
+                                    binding: 2,
+                                    resource: self.pipelines.leaf_data.as_entire_binding(),
+                                },
+                                wgpu::BindGroupEntry {
+                                    binding: 3,
+                                    resource: self.pipelines.materials.as_entire_binding(),
+                                },
+                                wgpu::BindGroupEntry {
+                                    binding: 4,
+                                    resource: wgpu::BindingResource::TextureView(a),
+                                },
+                                wgpu::BindGroupEntry {
+                                    binding: 5,
+                                    resource: wgpu::BindingResource::TextureView(b),
+                                },
+                                wgpu::BindGroupEntry {
+                                    binding: 6,
+                                    resource: wgpu::BindingResource::Sampler(
+                                        &self.pipelines.non_filtering_sampler,
+                                    ),
+                                },
+                            ],
+                        })
+                    };
+
+                    (
+                        texture.width(),
+                        texture.height(),
+                        FlipFlop([
+                            create_trace_bind_group(&a_view, &b_view),
+                            create_trace_bind_group(&b_view, &a_view),
+                        ]),
+                    )
+                },
+            )
+            .2;
+
+        let mut encoder = self
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
+
+        let mut compute_pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor::default());
+
+        compute_pass.set_pipeline(self.trace_pipeline);
+        compute_pass.set_bind_group(0, &trace_data.0[frame_index as usize % 2], &[]);
+
+        let workgroup_size = 8;
+
+        compute_pass.dispatch_workgroups(
+            texture.width().div_ceil(workgroup_size),
+            texture.height().div_ceil(workgroup_size),
+            1,
+        );
+
+        drop(compute_pass);
+
+        encoder.finish()
+    }
+
+    fn blit_to_screen(
+        &self,
+        source: Self::Texture,
+        screen: Self::Texture,
+        frame_index: u32,
+        hide_ui: bool,
+    ) -> Self::CommandBuffer {
+        let blit_data = self
+            .cached_textures
+            .blit_bind_groups
+            .get(
+                |&(current_width, current_height, _)| {
+                    current_width == source.width() && current_height == source.height()
+                },
+                || {
+                    let a_view = source.create_view(&wgpu::TextureViewDescriptor {
+                        base_array_layer: 0,
+                        array_layer_count: Some(1),
+                        dimension: Some(wgpu::TextureViewDimension::D2),
+                        ..Default::default()
+                    });
+                    let b_view = source.create_view(&wgpu::TextureViewDescriptor {
+                        base_array_layer: 1,
+                        array_layer_count: Some(1),
+                        dimension: Some(wgpu::TextureViewDimension::D2),
+                        ..Default::default()
+                    });
+
+                    let create_blit_bind_group = |hdr: &wgpu::TextureView| {
+                        self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+                            label: None,
+                            layout: &self.pipelines.bgl,
+                            entries: &[
+                                wgpu::BindGroupEntry {
+                                    binding: 0,
+                                    resource: self
+                                        .pipelines
+                                        .blit_uniform_buffer
+                                        .as_entire_binding(),
+                                },
+                                wgpu::BindGroupEntry {
+                                    binding: 1,
+                                    resource: wgpu::BindingResource::TextureView(
+                                        &self
+                                            .pipelines
+                                            .tonemapping_lut
+                                            .create_view(&Default::default()),
+                                    ),
+                                },
+                                wgpu::BindGroupEntry {
+                                    binding: 2,
+                                    resource: wgpu::BindingResource::Sampler(
+                                        &self.pipelines.filtering_sampler,
+                                    ),
+                                },
+                                wgpu::BindGroupEntry {
+                                    binding: 3,
+                                    resource: wgpu::BindingResource::TextureView(hdr),
+                                },
+                                wgpu::BindGroupEntry {
+                                    binding: 4,
+                                    resource: wgpu::BindingResource::Sampler(
+                                        &self.pipelines.non_filtering_sampler,
+                                    ),
+                                },
+                            ],
+                        })
+                    };
+
+                    (
+                        source.width(),
+                        source.height(),
+                        FlipFlop([
+                            create_blit_bind_group(&a_view),
+                            create_blit_bind_group(&b_view),
+                        ]),
+                    )
+                },
+            )
+            .2;
+
+        let view = screen.create_view(&wgpu::TextureViewDescriptor {
+            format: Some(self.view_format),
+            ..Default::default()
+        });
+
+        let mut encoder = self
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
+
+        let mut rpass = encoder
+            .begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: None,
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &view,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+            })
+            .forget_lifetime();
+        rpass.set_pipeline(&self.blit_pipeline);
+        rpass.set_bind_group(0, &blit_data.0[frame_index as usize % 2], &[]);
+        rpass.draw(0..3, 0..1);
+        if !hide_ui {
+            self.egui_renderer
+                .render(&mut rpass, self.tessellated, self.screen_descriptor);
+        }
+
+        drop(rpass);
+
+        encoder.finish()
+    }
+
+    fn create_flip_flop_hdr_texture(&self, width: u32, height: u32) -> Self::Texture {
+        self.cached_textures.hdr.get(
+            |tex| tex.width() == width && tex.height() == height,
+            || {
+                self.device.create_texture(&wgpu::TextureDescriptor {
+                    size: wgpu::Extent3d {
+                        width,
+                        height,
+                        depth_or_array_layers: 2,
+                    },
+                    dimension: wgpu::TextureDimension::D2,
+                    format: wgpu::TextureFormat::Rgba32Float,
+                    label: None,
+                    mip_level_count: 1,
+                    sample_count: 1,
+                    usage: wgpu::TextureUsages::STORAGE_BINDING
+                        | wgpu::TextureUsages::TEXTURE_BINDING,
+                    view_formats: &[],
+                })
+            },
+        )
+    }
+}
+
+#[derive(Clone)]
+struct FlipFlop<T>([T; 2]);
+
+trait RenderGraphBackend: Sync {
+    type CommandBuffer: Send;
+    type Texture: Send + Sync + Clone;
+}
+
+trait TonemapGraph: RenderGraphBackend {
+    fn create_flip_flop_hdr_texture(&self, width: u32, height: u32) -> Self::Texture;
+
+    fn trace(&self, texture: Self::Texture, frame_index: u32) -> Self::CommandBuffer;
+
+    fn blit_to_screen(
+        &self,
+        source: Self::Texture,
+        view: Self::Texture,
+        frame_index: u32,
+        hide_ui: bool,
+    ) -> Self::CommandBuffer;
+
+    fn run_frame(
+        &self,
+        view: Self::Texture,
+        frame_index: u32,
+        hdr_resolution: glam::UVec2,
+        hide_ui: bool,
+    ) -> Vec<Self::CommandBuffer> {
+        let hdr_texture = self.create_flip_flop_hdr_texture(hdr_resolution.x, hdr_resolution.y);
+        vec![
+            self.trace(hdr_texture.clone(), frame_index),
+            self.blit_to_screen(hdr_texture.clone(), view.clone(), frame_index, hide_ui),
+        ]
     }
 }

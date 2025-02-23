@@ -27,6 +27,7 @@ encase = { version = "0.9.0", features = ["glam"] }
 poll-promise = { version = "0.3.0" }
 rfd = "0.15.2"
 dot_vox = { version = "5.1.1", default-features = false }
+arc-swap = "1.7.1"
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 poll-promise = { version = "0.3.0", features = ["smol"] }

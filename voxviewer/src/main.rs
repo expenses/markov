@@ -6,7 +6,7 @@ mod app;
 mod gpu_resources;
 mod resource_loading;
 use app::App;
-use gpu_resources::{Pipelines, Resizables};
+use gpu_resources::Pipelines;
 use resource_loading::load_resource_bytes;
 
 const USE_SPIRV_SHADER: bool = false;
@@ -77,7 +77,7 @@ async fn run(event_loop: EventLoop<()>, window: Window) {
                     Default::default()
                 },
                 // Make sure we use the texture resolution limits from the adapter, so we can support images the size of the swapchain.
-                required_limits: wgpu::Limits::default(),
+                required_limits: adapter.limits(),
                 memory_hints: wgpu::MemoryHints::Performance,
             },
             None,
@@ -277,6 +277,7 @@ async fn run(event_loop: EventLoop<()>, window: Window) {
     );
 
     let mut app = App {
+        cached_textures: app::CachedTextures::new(&device),
         egui_renderer: egui_wgpu::Renderer::new(&device, swapchain_format, None, 1, false),
         egui_state: egui_winit::State::new(
             egui::Context::default(),
@@ -289,7 +290,6 @@ async fn run(event_loop: EventLoop<()>, window: Window) {
         left_mouse_down: false,
         right_mouse_down: false,
         window: &window,
-        resizables: Resizables::new(size.width, size.height, &device, &pipelines),
         config,
         surface,
         device,
@@ -373,6 +373,7 @@ struct Settings {
     show_heatmap: bool,
     edit_distance: f32,
     edit_size: f32,
+    resolution_scaling: f32,
 }
 
 impl Default for Settings {
@@ -392,6 +393,7 @@ impl Default for Settings {
             show_heatmap: false,
             edit_distance: 10.0,
             edit_size: 10.0,
+            resolution_scaling: 0.5,
         }
     }
 }

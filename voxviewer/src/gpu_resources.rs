@@ -107,7 +107,8 @@ impl Pipelines {
             ],
         });
 
-        let blit_shader = load_resource_str("shaders/blit_srgb.wgsl").await;
+        let blit_shader =
+            wgpu::ShaderSource::Wgsl(load_resource_str("shaders/blit_srgb.wgsl").await.into());
 
         Self {
             non_filtering_sampler: device.create_sampler(&wgpu::SamplerDescriptor::default()),
@@ -164,7 +165,7 @@ impl Pipelines {
                 vertex: wgpu::VertexState {
                     module: &device.create_shader_module(wgpu::ShaderModuleDescriptor {
                         label: None,
-                        source: wgpu::ShaderSource::Wgsl(blit_shader.clone().into()),
+                        source: blit_shader.clone(),
                     }),
                     entry_point: Some("VSMain"),
                     compilation_options: Default::default(),
@@ -173,7 +174,7 @@ impl Pipelines {
                 fragment: Some(wgpu::FragmentState {
                     module: &device.create_shader_module(wgpu::ShaderModuleDescriptor {
                         label: None,
-                        source: wgpu::ShaderSource::Wgsl(blit_shader.into()),
+                        source: blit_shader,
                     }),
                     entry_point: Some("PSMain"),
                     compilation_options: Default::default(),
@@ -235,120 +236,6 @@ impl Pipelines {
                 .unwrap()
                 .data,
             ),
-        }
-    }
-}
-
-pub struct Resizables {
-    pub blit_bind_groups: [wgpu::BindGroup; 2],
-    pub trace_bind_groups: [wgpu::BindGroup; 2],
-}
-
-impl Resizables {
-    pub fn new(width: u32, height: u32, device: &wgpu::Device, pipelines: &Pipelines) -> Self {
-        let create_hdr = || {
-            device.create_texture(&wgpu::TextureDescriptor {
-                size: wgpu::Extent3d {
-                    width,
-                    height,
-                    depth_or_array_layers: 1,
-                },
-                dimension: wgpu::TextureDimension::D2,
-                format: wgpu::TextureFormat::Rgba32Float,
-                label: None,
-                mip_level_count: 1,
-                sample_count: 1,
-                usage: wgpu::TextureUsages::STORAGE_BINDING | wgpu::TextureUsages::TEXTURE_BINDING,
-                view_formats: &[],
-            })
-        };
-
-        let hdr_a = create_hdr();
-        let hdr_b = create_hdr();
-
-        let create_trace_bind_group = |a: &wgpu::Texture, b: &wgpu::Texture| {
-            device.create_bind_group(&wgpu::BindGroupDescriptor {
-                label: None,
-                layout: &pipelines.trace_bgl,
-                entries: &[
-                    wgpu::BindGroupEntry {
-                        binding: 0,
-                        resource: pipelines.uniform_buffer.as_entire_binding(),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 1,
-                        resource: pipelines.tree_nodes.as_entire_binding(),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 2,
-                        resource: pipelines.leaf_data.as_entire_binding(),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 3,
-                        resource: pipelines.materials.as_entire_binding(),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 4,
-                        resource: wgpu::BindingResource::TextureView(
-                            &a.create_view(&Default::default()),
-                        ),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 5,
-                        resource: wgpu::BindingResource::TextureView(
-                            &b.create_view(&Default::default()),
-                        ),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 6,
-                        resource: wgpu::BindingResource::Sampler(&pipelines.non_filtering_sampler),
-                    },
-                ],
-            })
-        };
-
-        let create_blit_bind_group = |hdr: &wgpu::Texture| {
-            device.create_bind_group(&wgpu::BindGroupDescriptor {
-                label: None,
-                layout: &pipelines.bgl,
-                entries: &[
-                    wgpu::BindGroupEntry {
-                        binding: 0,
-                        resource: pipelines.blit_uniform_buffer.as_entire_binding(),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 1,
-                        resource: wgpu::BindingResource::TextureView(
-                            &pipelines.tonemapping_lut.create_view(&Default::default()),
-                        ),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 2,
-                        resource: wgpu::BindingResource::Sampler(&pipelines.filtering_sampler),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 3,
-                        resource: wgpu::BindingResource::TextureView(
-                            &hdr.create_view(&Default::default()),
-                        ),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 4,
-                        resource: wgpu::BindingResource::Sampler(&pipelines.non_filtering_sampler),
-                    },
-                ],
-            })
-        };
-
-        Self {
-            blit_bind_groups: [
-                create_blit_bind_group(&hdr_a),
-                create_blit_bind_group(&hdr_b),
-            ],
-            trace_bind_groups: [
-                create_trace_bind_group(&hdr_a, &hdr_b),
-                create_trace_bind_group(&hdr_b, &hdr_a),
-            ],
         }
     }
 }
