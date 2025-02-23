@@ -62,7 +62,7 @@ impl App<'_> {
                         };
 
                         ui.horizontal(|ui| {
-                            if ui.button("Load").clicked {
+                            if ui.button("Load").clicked() {
                                 self.promise =
                                     Some(poll_promise::Promise::spawn_local(async move {
                                         let file = match browser().pick_file().await {
@@ -114,7 +114,7 @@ impl App<'_> {
                                     }));
                             }
 
-                            if ui.button("Save").clicked {
+                            if ui.button("Save").clicked() {
                                 let mut vec = Vec::new();
                                 tree64.serialize(&mut vec).unwrap();
                                 self.promise =
@@ -328,6 +328,7 @@ impl App<'_> {
                                                     material.base_colour[2],
                                                 ),
                                                 egui::Stroke::new(1.0, stroke_colour),
+                                                egui::StrokeKind::Middle,
                                             );
                                         }
                                     });

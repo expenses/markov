@@ -16,3 +16,5 @@ voxviewer/voxviewer
 *.vox
 *.dag
 *.zvox
+/temp_scripts
+/pyproject.toml

@@ -215,16 +215,29 @@
         devShells.wgpu = with pkgs;
           mkShell rec {
             nativeBuildInputs = [
-              (shader-slang.overrideAttrs (attrs: {
-                src = fetchFromGitHub {
-                  owner = "shader-slang";
-                  repo = "slang";
-                  rev = "a9ce7520e5f1b97b09e5de69455258bef55e10d2";
-                  hash = "sha256-ffB0Fer9r6sqGZztywHfV0o68Zh4dRQmdItOGqBIOPI=";
-                  fetchSubmodules = true;
-                };
-                cmakeFlags = attrs.cmakeFlags ++ ["-DSLANG_RHI_ENABLE_CUDA=0"];
-              }))
+              ninja
+
+              ((shader-slang.override {
+                  spirv-headers = spirv-headers.overrideAttrs {
+                    src = fetchFromGitHub {
+                      owner = "KhronosGroup";
+                      repo = "SPIRV-Headers";
+                      rev = "767e901c986e9755a17e7939b3046fc2911a4bbd";
+                      hash = "sha256-mXj6HDIEEjvGLO3nJEIRxdJN28/xUA2W+r9SRnh71LU=";
+                    };
+                  };
+                })
+                .overrideAttrs (arrs: {
+                  src = fetchFromGitHub {
+                    owner = "shader-slang";
+
+                    repo = "slang";
+                    rev = "e043428c5ac263fdb61072bd769fef769e8b08e4";
+                    fetchSubmodules = true;
+                    hash = "sha256-qyUx0fwr6pLo9fAynBlo4m7JFcs3lnTcnebA6LGqTo0=";
+                  };
+                }))
+
               pkg-config
               renderdoc
               spirv-tools
