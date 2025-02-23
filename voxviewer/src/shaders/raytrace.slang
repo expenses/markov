@@ -206,7 +206,7 @@ struct MaterialInstance {
 StructuredBuffer<Material> materials;
 
 struct MaterialAndShadingData {
-    MaterialInstance material = {};
+    MaterialInstance material;
     ShadingData shading_data;
 
     float3 get_direct_lighting<S: ISampleGenerator>(inout S sampler) {

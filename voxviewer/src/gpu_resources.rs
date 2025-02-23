@@ -107,6 +107,8 @@ impl Pipelines {
             ],
         });
 
+        let blit_shader = load_resource_str("shaders/blit_srgb.wgsl").await;
+
         Self {
             non_filtering_sampler: device.create_sampler(&wgpu::SamplerDescriptor::default()),
             filtering_sampler: device.create_sampler(&wgpu::SamplerDescriptor {
@@ -162,9 +164,7 @@ impl Pipelines {
                 vertex: wgpu::VertexState {
                     module: &device.create_shader_module(wgpu::ShaderModuleDescriptor {
                         label: None,
-                        source: wgpu::ShaderSource::Wgsl(
-                            load_resource_str("shaders/blit_srgb_vs.wgsl").await.into(),
-                        ),
+                        source: wgpu::ShaderSource::Wgsl(blit_shader.clone().into()),
                     }),
                     entry_point: Some("VSMain"),
                     compilation_options: Default::default(),
@@ -173,9 +173,7 @@ impl Pipelines {
                 fragment: Some(wgpu::FragmentState {
                     module: &device.create_shader_module(wgpu::ShaderModuleDescriptor {
                         label: None,
-                        source: wgpu::ShaderSource::Wgsl(
-                            load_resource_str("shaders/blit_srgb_ps.wgsl").await.into(),
-                        ),
+                        source: wgpu::ShaderSource::Wgsl(blit_shader.into()),
                     }),
                     entry_point: Some("PSMain"),
                     compilation_options: Default::default(),
