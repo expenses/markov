@@ -1,7 +1,7 @@
 use crate::gpu_resources::Pipelines;
 use crate::{
-    copy_aligned, srgb_to_linear, CameraUniforms, Material, PromizeResult, Settings, SunUniforms,
-    TreeUniforms, Uniforms,
+    srgb_to_linear, CameraUniforms, Material, PromizeResult, Settings, SunUniforms, TreeUniforms,
+    Uniforms,
 };
 use dolly::prelude::*;
 use glam::swizzles::Vec3Swizzles;
@@ -91,7 +91,7 @@ pub struct App<'a> {
     pub pipelines: Pipelines,
     pub materials: Vec<Material>,
     pub egui_renderer: egui_wgpu::Renderer,
-    pub tree64: tree64::Tree64<u8>,
+    pub tree64: tree64::Tree64<u32>,
     pub selected_material: usize,
     pub hide_ui: bool,
     pub padded_uniform_buffer: encase::UniformBuffer<Vec<u8>>,
@@ -150,7 +150,7 @@ impl App<'_> {
                                                 PromizeResult::Load(
                                                     tree64::Tree64::new((
                                                         {
-                                                            let empty_slice: &[u8] = &[];
+                                                            let empty_slice: &[u32] = &[];
                                                             empty_slice
                                                         },
                                                         [0; 3],
@@ -257,11 +257,10 @@ impl App<'_> {
                                         * std::mem::size_of::<tree64::Node>() as u64,
                                     bytemuck::cast_slice(&tree64.nodes.inner[ranges.nodes]),
                                 );
-                                copy_aligned(
-                                    queue,
+                                queue.write_buffer(
                                     &pipelines.leaf_data,
-                                    bytemuck::cast_slice(&tree64.data.inner),
-                                    ranges.data,
+                                    ranges.data.start as u64 * std::mem::size_of::<u32>() as u64,
+                                    bytemuck::cast_slice(&tree64.data.inner[ranges.data]),
                                 );
                             };
 
@@ -270,7 +269,7 @@ impl App<'_> {
                                     edit(None);
                                 }
                                 if ui.button("Create").clicked() {
-                                    edit(Some(self.selected_material as u8 + 1));
+                                    edit(Some(self.selected_material as u32 + 1));
                                 }
                             });
                         });
@@ -537,7 +536,7 @@ impl App<'_> {
                     cosine_apparent_size: settings.sun_apparent_size.to_radians().cos(),
                 },
                 tree: TreeUniforms {
-                    scale: root_state.num_levels as u32 * 2,
+                    num_levels: root_state.num_levels as _,
                     root_node_index: root_state.index,
                     offset: <[i32; 3]>::from(root_state.offset).into(),
                 },
@@ -573,7 +572,7 @@ impl winit::application::ApplicationHandler for App<'_> {
     fn suspended(&mut self, _event_loop: &ActiveEventLoop) {}
 
     fn about_to_wait(&mut self, _event_loop: &ActiveEventLoop) {
-        #[cfg(not(target_arch = "wasm32"))]
+        /*#[cfg(not(target_arch = "wasm32"))]
         poll_promise::tick_local();
         if let Some(promise) = self.promise.take() {
             match promise.try_take() {
@@ -605,7 +604,7 @@ impl winit::application::ApplicationHandler for App<'_> {
                     }
                 }
             }
-        }
+        }*/
         self.window.request_redraw();
     }
 

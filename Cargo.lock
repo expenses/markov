@@ -3323,7 +3323,7 @@ dependencies = [
 [[package]]
 name = "tree64"
 version = "0.1.0"
-source = "git+https://github.com/expenses/tree64#bbe44770ca2d7518e8cedd8cf0e67f596deafb31"
+source = "git+https://github.com/expenses/tree64#96fd2c9603e92a72733eafa3e6e84a49b78a5756"
 dependencies = [
  "arrayvec",
  "bytemuck",

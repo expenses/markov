@@ -197,13 +197,13 @@ impl Pipelines {
             }),
             tree_nodes: device.create_buffer(&wgpu::BufferDescriptor {
                 label: None,
-                size: 20_000_000,
+                size: 350226124,
                 usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
                 mapped_at_creation: false,
             }),
             leaf_data: device.create_buffer(&wgpu::BufferDescriptor {
                 label: None,
-                size: 22_000_000,
+                size: 1598646616,
                 usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
                 mapped_at_creation: false,
             }),

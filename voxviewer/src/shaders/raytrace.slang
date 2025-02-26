@@ -34,7 +34,7 @@ Ray GetPrimaryRay<S: ISampleGenerator>(int2 screenPos, inout S rng) {
     float3 rayDirection = normalize(far.xyz / far.w);
 
     Ray ray;
-    ray.pos = camera.pos % 1;
+    ray.pos = camera.pos;
     ray.dir = rayDirection;
 
     return ray;
@@ -44,14 +44,16 @@ Ray GetPrimaryRay<S: ISampleGenerator>(int2 screenPos, inout S rng) {
 StructuredBuffer<backend::tree64::Node> tree_nodes;
 StructuredBuffer<uint> leaf_data;
 
-HitInfo ray_cast(Ray ray, bool coarse) {
-    backend::tree64::VoxelMap voxel_map;
+HitInfo<uint> ray_cast(Ray ray, bool coarse) {
+    backend::tree64::VoxelMap<uint> voxel_map;
     voxel_map.TreeNodes = tree_nodes;
     voxel_map.LeafData = leaf_data;
-    voxel_map.TreeScale = tree.scale;
+    // The code divides by `1 << TreeScale`. As each level is 4^3 cubes,
+    // the scale increases by 4x per level.
+    voxel_map.TreeScale = tree.num_levels * 2;
     voxel_map.RootNodeIndex = tree.root_node_index;
 
-    return voxel_map.RayCast(tree.offset + int3(camera.pos), ray.pos, ray.dir, coarse);
+    return voxel_map.RayCast(tree.offset, ray.pos, ray.dir, coarse);
 }
 
 struct Camera {
@@ -101,7 +103,7 @@ uniform struct {
 
 uniform struct {
     int3 offset;
-    uint scale;
+    uint num_levels;
     uint root_node_index;
 } tree;
 
@@ -119,7 +121,7 @@ enum Settings {
     ShowHeatmap
 };
 
-ShadingData create_shading_data_from_hit(HitInfo hit, float3 ray_dir) {
+ShadingData create_shading_data_from_hit(HitInfo<uint> hit, float3 ray_dir) {
     ShadingData shading_data;
     shading_data.frame.N = hit.Normal;
     shading_data.frame.T = shading_data.frame.N.yzx;
@@ -210,16 +212,32 @@ struct MaterialAndShadingData {
     ShadingData shading_data;
 
     float3 get_direct_lighting<S: ISampleGenerator>(inout S sampler) {
-        float lighting = float(!shoot_shadow_ray(Ray(shading_data.computeRayOrigin(), sample_light(sampler))));
+        float lighting = float(!shoot_shadow_ray(Ray(offset_ray_origin(shading_data), sample_light(sampler))));
         return material.eval(shading_data, sun.direction, lighting * sun.emission, sampler);
     }
 };
 
-MaterialAndShadingData create_material_from_hit(HitInfo hit, float3 ray_dir) {
+func srgb_to_linear(value: uint3) -> float3 {
+    let value = float3(value) / 255;
+    let linear = select(value <= 0.04045, value / 12.92, pow((value + 0.055) / 1.055, 2.4));
+    return linear;
+}
+
+MaterialAndShadingData create_material_from_hit(HitInfo<uint> hit, float3 ray_dir) {
     MaterialAndShadingData output;
     output.shading_data = create_shading_data_from_hit(hit, ray_dir);
 
-    let material = materials[hit.MaterialId - 1u];
+    let unpacked = unpack_u8u32(hit.MaterialId);
+
+    let aux = min(float(unpacked.w >> 2)/63, 1);
+
+    let is_emissive = unpacked.w & 1 == 1;
+
+    Material material;
+    material.base_colour = srgb_to_linear(unpacked.xyz);
+    material.emission_factor = float(is_emissive) * pow(10, 4 * aux);
+    material.metallic = (unpacked.w >> 1) & 1;
+    material.linear_roughness = aux;
 
     output.material = MaterialInstance(
         material, output.shading_data
@@ -256,7 +274,12 @@ bool shoot_shadow_ray(Ray ray) {
     return false;
 }
 
-float3 compute_shading<S: ISampleGenerator>(HitInfo hit, float3 ray_dir, inout S sampler) {
+// shading_data.computeRayOrigin() doesn't seem to work super well for values close to 0.
+float3 offset_ray_origin(ShadingData data) {
+    return data.posW + data.frame.N * 0.01;
+}
+
+float3 compute_shading<S: ISampleGenerator>(HitInfo<uint> hit, float3 ray_dir, inout S sampler) {
     var material = create_material_from_hit(hit, ray_dir);
     var radiance = material.get_direct_lighting(sampler);
     var throughput = float3(1.0);
@@ -273,7 +296,7 @@ float3 compute_shading<S: ISampleGenerator>(HitInfo hit, float3 ray_dir, inout S
             break;
         }
 
-        let ray = Ray(material.shading_data.computeRayOrigin(), sample_result.wo);
+        let ray = Ray(offset_ray_origin(material.shading_data), sample_result.wo);
         hit = ray_cast(ray, true);
         if (!hit.Miss) {
             material = create_material_from_hit(hit, ray.dir);
@@ -288,7 +311,7 @@ float3 compute_shading<S: ISampleGenerator>(HitInfo hit, float3 ray_dir, inout S
 }
 
 float3 trace<S: ISampleGenerator>(Ray ray, inout S sampler) {
-    HitInfo hit = ray_cast(ray, false);
+    HitInfo<uint> hit = ray_cast(ray, false);
     if (!hit.Miss) {
         return compute_shading(hit, ray.dir, sampler);
     }

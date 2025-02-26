@@ -11,37 +11,9 @@ use resource_loading::load_resource_bytes;
 
 const USE_SPIRV_SHADER: bool = false;
 
-fn copy_aligned(
-    queue: &wgpu::Queue,
-    buffer: &wgpu::Buffer,
-    data: &[u8],
-    range: std::ops::Range<usize>,
-) {
-    let aligned_range = std::ops::Range {
-        start: range
-            .start
-            .saturating_sub(wgpu::COPY_BUFFER_ALIGNMENT as _)
-            .next_multiple_of(wgpu::COPY_BUFFER_ALIGNMENT as _),
-
-        end: range.end.next_multiple_of(wgpu::COPY_BUFFER_ALIGNMENT as _),
-    };
-    if aligned_range.end <= data.len() {
-        queue.write_buffer(
-            buffer,
-            aligned_range.start as _,
-            &data[aligned_range.clone()],
-        );
-    } else {
-        let mut aligned_data = vec![0; aligned_range.len()];
-        aligned_data[..data.len() - aligned_range.start]
-            .copy_from_slice(&data[aligned_range.start..data.len()]);
-        queue.write_buffer(buffer, aligned_range.start as _, &aligned_data);
-    }
-}
-
 enum PromizeResult {
     Cancelled,
-    Load(tree64::Tree64<u8>, Option<Vec<Material>>),
+    Load(tree64::Tree64<u32>, Option<Vec<Material>>),
     Saved,
 }
 
@@ -268,12 +240,10 @@ async fn run(event_loop: EventLoop<()>, window: Window) {
         0,
         bytemuck::cast_slice(&tree64.nodes.inner),
     );
-
-    copy_aligned(
-        &queue,
+    queue.write_buffer(
         &pipelines.leaf_data,
-        &tree64.data,
-        0..tree64.data.len(),
+        0,
+        bytemuck::cast_slice(&tree64.data.inner),
     );
 
     let mut app = App {
@@ -298,7 +268,7 @@ async fn run(event_loop: EventLoop<()>, window: Window) {
         frame_index: 0,
         settings: Settings::default(),
         camera: CameraRig::builder()
-            .with(Position::new(glam::Vec3::new(350.0, 150.0, 230.0)))
+            .with(Position::new(glam::Vec3::new(0.0, 0.0, 0.0)))
             .with(YawPitch::new().yaw_degrees(90.).pitch_degrees(-25.0))
             .with(Smooth::new_position_rotation(0.25, 0.25))
             .with(Arm::new(glam::Vec3::Z * 175.0))
@@ -379,13 +349,13 @@ struct Settings {
 impl Default for Settings {
     fn default() -> Self {
         Self {
-            sun_long: 90.0_f32,
-            sun_lat: 45.0_f32,
+            sun_long: -90.0_f32,
+            sun_lat: 85.0_f32,
             enable_shadows: true,
             sun_apparent_size: 1.0_f32,
             accumulate_samples: true,
             max_bounces: 1,
-            background_colour: [0.01; 3],
+            background_colour: [0.1; 3],
             sun_colour: [1.0; 3],
             sun_strength: 20.0,
             background_strength: 1.0,
@@ -419,7 +389,7 @@ struct SunUniforms {
 #[derive(encase::ShaderType)]
 struct TreeUniforms {
     offset: glam::IVec3,
-    scale: u32,
+    num_levels: u32,
     root_node_index: u32,
 }
 
