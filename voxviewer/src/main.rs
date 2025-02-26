@@ -17,7 +17,7 @@ enum PromizeResult {
     Saved,
 }
 
-async fn run(event_loop: EventLoop<()>, window: Window) {
+async fn run(event_loop: EventLoop<()>, window: Window, scale_override: Option<f32>) {
     let mut size = window.inner_size();
     size.width = size.width.max(1);
     size.height = size.height.max(1);
@@ -110,9 +110,9 @@ async fn run(event_loop: EventLoop<()>, window: Window) {
         settings: Settings::default(),
         camera: CameraRig::builder()
             .with(Position::new(glam::Vec3::new(0.0, 0.0, 0.0)))
-            .with(YawPitch::new().yaw_degrees(90.).pitch_degrees(-25.0))
+            .with(YawPitch::new().yaw_degrees(-80.).pitch_degrees(-40.0))
             .with(Smooth::new_position_rotation(0.25, 0.25))
-            .with(Arm::new(glam::Vec3::Z * 175.0))
+            .with(Arm::new(glam::Vec3::Z * 200.0))
             .build(),
         pipelines,
         tree64,
@@ -121,6 +121,10 @@ async fn run(event_loop: EventLoop<()>, window: Window) {
         promise: None,
         create_material: Default::default(),
     };
+
+    if let Some(scale) = scale_override {
+        app.settings.resolution_scaling = scale;
+    }
 
     event_loop.run_app(&mut app).unwrap()
 }
@@ -148,14 +152,39 @@ pub fn main() {
     #[cfg(not(target_arch = "wasm32"))]
     {
         env_logger::init();
-        pollster::block_on(run(event_loop, window));
+        pollster::block_on(run(event_loop, window, None));
     }
     #[cfg(target_arch = "wasm32")]
     {
+        let query_string = web_sys::window().unwrap().location().search().unwrap();
+        let scale = parse_url_query_string(&query_string, "scale")
+            .and_then(|scale| scale.parse::<f32>().ok())
+            .map(|val| val.clamp(0.05, 1.0));
+
         std::panic::set_hook(Box::new(console_error_panic_hook::hook));
         console_log::init().expect("could not initialize logger");
-        wasm_bindgen_futures::spawn_local(run(event_loop, window));
+        log::warn!("!!{:?}!!", scale);
+
+        wasm_bindgen_futures::spawn_local(run(event_loop, window, scale));
     }
+}
+
+/// Parse the query string as returned by `web_sys::window()?.location().search()?` and get a
+/// specific key out of it.
+fn parse_url_query_string<'a>(query: &'a str, search_key: &str) -> Option<&'a str> {
+    let query_string = query.strip_prefix('?')?;
+
+    for pair in query_string.split('&') {
+        let mut pair = pair.split('=');
+        let key = pair.next()?;
+        let value = pair.next()?;
+
+        if key == search_key {
+            return Some(value);
+        }
+    }
+
+    None
 }
 
 struct Settings {
@@ -193,7 +222,7 @@ impl Default for Settings {
             show_heatmap: false,
             edit_distance: 10.0,
             edit_size: 10.0,
-            resolution_scaling: 0.5,
+            resolution_scaling: 1.0,
         }
     }
 }
