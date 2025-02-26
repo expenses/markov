@@ -1126,7 +1126,7 @@ fn compute_shading_0( hit_4 : HitInfo_0,  ray_dir_2 : vec3<f32>,  sampler_3 : pt
         var _S113 : vec3<f32>;
         var _S114 : MaterialAndShadingData_0;
         var _S115 : Ray_0 = Ray_x24init_0(offset_ray_origin_0(_S111.shading_data_0), sample_result_0.wo_3);
-        var _S116 : HitInfo_0 = ray_cast_0(_S115, true);
+        var _S116 : HitInfo_0 = ray_cast_0(_S115, false);
         if(!_S116.Miss_0)
         {
             var material_5 : MaterialAndShadingData_0 = create_material_from_hit_0(_S116, _S115.dir_0);

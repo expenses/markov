@@ -1,7 +1,6 @@
 use crate::gpu_resources::Pipelines;
 use crate::{
-    srgb_to_linear, CameraUniforms, Material, PromizeResult, Settings, SunUniforms, TreeUniforms,
-    Uniforms,
+    CameraUniforms, PackedMaterial, PromizeResult, Settings, SunUniforms, TreeUniforms, Uniforms,
 };
 use dolly::prelude::*;
 use glam::swizzles::Vec3Swizzles;
@@ -75,6 +74,27 @@ impl CachedTextures {
     }
 }
 
+#[derive(PartialEq)]
+enum CreateMaterialTy {
+    Dielectic { roughness: f32 },
+    Metallic { roughness: f32 },
+    Emissive { factor: f32 },
+}
+
+pub struct CreateMaterial {
+    base_colour: [u8; 3],
+    ty: CreateMaterialTy,
+}
+
+impl Default for CreateMaterial {
+    fn default() -> Self {
+        Self {
+            base_colour: [245, 10, 10],
+            ty: CreateMaterialTy::Dielectic { roughness: 1.0 },
+        }
+    }
+}
+
 pub struct App<'a> {
     pub egui_state: egui_winit::State,
     pub window: &'a Window,
@@ -89,14 +109,13 @@ pub struct App<'a> {
     pub settings: Settings,
     pub camera: CameraRig,
     pub pipelines: Pipelines,
-    pub materials: Vec<Material>,
     pub egui_renderer: egui_wgpu::Renderer,
-    pub tree64: tree64::Tree64<u32>,
-    pub selected_material: usize,
+    pub tree64: tree64::Tree64<PackedMaterial>,
     pub hide_ui: bool,
     pub padded_uniform_buffer: encase::UniformBuffer<Vec<u8>>,
     pub promise: Option<poll_promise::Promise<PromizeResult>>,
     pub cached_textures: CachedTextures,
+    pub create_material: CreateMaterial,
 }
 
 impl App<'_> {
@@ -104,7 +123,6 @@ impl App<'_> {
         let Self {
             egui_state,
             settings,
-            materials,
             queue,
             pipelines,
             tree64,
@@ -141,38 +159,20 @@ impl App<'_> {
                                                         std::io::Cursor::new(bytes),
                                                     )
                                                     .unwrap(),
-                                                    None,
                                                 )
                                             }
                                             Some((_, "vox")) => {
                                                 let bytes = file.read().await;
                                                 let vox = dot_vox::load_bytes(&bytes).unwrap();
-                                                PromizeResult::Load(
-                                                    tree64::Tree64::new((
-                                                        {
-                                                            let empty_slice: &[u32] = &[];
-                                                            empty_slice
-                                                        },
-                                                        [0; 3],
-                                                    )),
-                                                    Some(
-                                                        vox.palette
-                                                            .into_iter()
-                                                            .skip(1)
-                                                            .map(|colour| Material {
-                                                                base_colour: [
-                                                                    srgb_to_linear(colour.r),
-                                                                    srgb_to_linear(colour.g),
-                                                                    srgb_to_linear(colour.b),
-                                                                ],
-                                                                linear_roughness: 1.0,
-                                                                ..Default::default()
-                                                            })
-                                                            .collect(),
-                                                    ),
-                                                )
+                                                PromizeResult::Load(tree64::Tree64::new((
+                                                    {
+                                                        let empty_slice: &[PackedMaterial] = &[];
+                                                        empty_slice
+                                                    },
+                                                    [0; 3],
+                                                )))
                                             }
-                                            _ => return PromizeResult::Cancelled,
+                                            _ => PromizeResult::Cancelled,
                                         }
                                     }));
                             }
@@ -264,12 +264,71 @@ impl App<'_> {
                                 );
                             };
 
+                            ui.label("Material");
+                            ui.horizontal(|ui| {
+                                ui.label("Base Colour");
+                                ui.color_edit_button_srgb(&mut self.create_material.base_colour);
+                            });
+
+                            egui::ComboBox::from_label("Type")
+                                .selected_text(match self.create_material.ty {
+                                    CreateMaterialTy::Dielectic { .. } => "Dielectic",
+                                    CreateMaterialTy::Metallic { .. } => "Metallic",
+                                    CreateMaterialTy::Emissive { .. } => "Emissive",
+                                })
+                                .show_ui(ui, |ui| {
+                                    ui.selectable_value(
+                                        &mut self.create_material.ty,
+                                        CreateMaterialTy::Dielectic { roughness: 1.0 },
+                                        "Dielectric",
+                                    );
+                                    ui.selectable_value(
+                                        &mut self.create_material.ty,
+                                        CreateMaterialTy::Metallic { roughness: 0.05 },
+                                        "Metallic",
+                                    );
+                                    ui.selectable_value(
+                                        &mut self.create_material.ty,
+                                        CreateMaterialTy::Emissive { factor: 1.0 },
+                                        "Emissive",
+                                    );
+                                });
+                            ui.horizontal(|ui| {
+                                match &mut self.create_material.ty {
+                                    CreateMaterialTy::Dielectic { roughness }
+                                    | CreateMaterialTy::Metallic { roughness } => {
+                                        ui.label("Roughness");
+                                        ui.add(egui::Slider::new(roughness, 0.0..=1.0));
+                                    }
+                                    CreateMaterialTy::Emissive { factor } => {
+                                        ui.label("Emissive factor");
+                                        ui.add(egui::Slider::new(factor, 0.0..=10_000.0));
+                                    }
+                                };
+                            });
                             ui.horizontal(|ui| {
                                 if ui.button("Delete").clicked() {
                                     edit(None);
                                 }
                                 if ui.button("Create").clicked() {
-                                    edit(Some(self.selected_material as u32 + 1));
+                                    fn posterize(value: f32, bits: u32) -> u8 {
+                                        (value * (2_u32.pow(bits) - 1) as f32).round() as u8
+                                    }
+
+                                    edit(Some(PackedMaterial {
+                                        base_colour: self.create_material.base_colour,
+                                        ty_and_aux_value: match self.create_material.ty {
+                                            CreateMaterialTy::Dielectic { roughness } => {
+                                                posterize(roughness, 6) << 2
+                                            }
+                                            CreateMaterialTy::Metallic { roughness } => {
+                                                (posterize(roughness, 6) << 2) | (1 << 1)
+                                            }
+                                            CreateMaterialTy::Emissive { factor } => {
+                                                (posterize(factor.log10() / 4.0, 6) << 2) | (1 << 0)
+                                            }
+                                        },
+                                    }));
                                 }
                             });
                         });
@@ -360,85 +419,6 @@ impl App<'_> {
                             .checkbox(&mut settings.show_heatmap, "Show Heatmap")
                             .changed();
                     });
-                    egui::CollapsingHeader::new("Materials")
-                        .default_open(true)
-                        .show(ui, |ui| {
-                            egui::ScrollArea::vertical()
-                                .max_height(400.0)
-                                .show(ui, |ui| {
-                                    ui.horizontal_wrapped(|ui| {
-                                        for (i, material) in materials.iter().enumerate() {
-                                            let (rect, response) = ui.allocate_at_least(
-                                                egui::Vec2::new(35., 20.),
-                                                egui::Sense::click(),
-                                            );
-
-                                            let stroke_colour = egui::Color32::WHITE
-                                                .linear_multiply(
-                                                    if response.hovered()
-                                                        || i == self.selected_material
-                                                    {
-                                                        1.0
-                                                    } else {
-                                                        0.25
-                                                    },
-                                                );
-
-                                            if response.clicked() {
-                                                self.selected_material = i;
-                                            }
-
-                                            ui.painter().rect(
-                                                rect,
-                                                5.0,
-                                                egui::Rgba::from_rgb(
-                                                    material.base_colour[0],
-                                                    material.base_colour[1],
-                                                    material.base_colour[2],
-                                                ),
-                                                egui::Stroke::new(1.0, stroke_colour),
-                                                egui::StrokeKind::Middle,
-                                            );
-                                        }
-                                    });
-                                });
-
-                            let material = &mut materials[self.selected_material];
-
-                            let mut changed = false;
-                            ui.label("Base Colour");
-                            changed |= egui::widgets::color_picker::color_edit_button_rgb(
-                                ui,
-                                &mut material.base_colour,
-                            )
-                            .changed();
-                            ui.label("Emission Factor");
-                            changed |= ui
-                                .add(egui::Slider::new(
-                                    &mut material.emission_factor,
-                                    0.0..=10_000.0,
-                                ))
-                                .changed();
-                            ui.label("Linear Roughness");
-                            changed |= ui
-                                .add(egui::Slider::new(
-                                    &mut material.linear_roughness,
-                                    0.000..=1.0,
-                                ))
-                                .changed();
-                            ui.label("Metallic Factor");
-                            changed |= ui
-                                .add(egui::Slider::new(&mut material.metallic, 0.0..=1.0))
-                                .changed();
-                            if changed {
-                                queue.write_buffer(
-                                    &pipelines.materials,
-                                    (self.selected_material * std::mem::size_of::<Material>()) as _,
-                                    bytemuck::bytes_of(&*material),
-                                );
-                                reset_accumulation = true;
-                            };
-                        });
                 });
         });
 
@@ -517,7 +497,7 @@ impl App<'_> {
                         0.0001,
                     ) * view_matrix)
                         .inverse(),
-                    pos: glam::Vec3::from(transform.position).into(),
+                    pos: glam::Vec3::from(transform.position),
                     forward: transform.forward(),
                     view: view_matrix,
                     view_inv: view_matrix.inverse(),
@@ -525,14 +505,12 @@ impl App<'_> {
                     right: transform.right(),
                 },
                 sun: SunUniforms {
-                    emission: (glam::Vec3::from(settings.sun_colour) * settings.sun_strength)
-                        .into(),
+                    emission: glam::Vec3::from(settings.sun_colour) * settings.sun_strength,
                     direction: glam::Vec3::new(
                         settings.sun_long.to_radians().sin() * settings.sun_lat.to_radians().cos(),
                         settings.sun_lat.to_radians().sin(),
                         settings.sun_long.to_radians().cos() * settings.sun_lat.to_radians().cos(),
-                    )
-                    .into(),
+                    ),
                     cosine_apparent_size: settings.sun_apparent_size.to_radians().cos(),
                 },
                 tree: TreeUniforms {
@@ -542,14 +520,13 @@ impl App<'_> {
                 },
                 resolution: self.hdr_resolution(),
                 settings: (settings.enable_shadows as i32)
-                    | (settings.accumulate_samples as i32) << 1
-                    | (settings.show_heatmap as i32) << 2,
+                    | ((settings.accumulate_samples as i32) << 1)
+                    | ((settings.show_heatmap as i32) << 2),
                 frame_index: self.frame_index,
                 accumulated_frame_index: self.accumulated_frame_index,
                 max_bounces: settings.max_bounces,
-                background_colour: (glam::Vec3::from(settings.background_colour)
-                    * settings.background_strength)
-                    .into(),
+                background_colour: glam::Vec3::from(settings.background_colour)
+                    * settings.background_strength,
             })
             .unwrap();
 
@@ -986,7 +963,7 @@ impl TonemapGraph for Backend<'_> {
                 occlusion_query_set: None,
             })
             .forget_lifetime();
-        rpass.set_pipeline(&self.blit_pipeline);
+        rpass.set_pipeline(self.blit_pipeline);
         rpass.set_bind_group(0, &blit_data.0[frame_index as usize % 2], &[]);
         rpass.draw(0..3, 0..1);
         if !hide_ui {

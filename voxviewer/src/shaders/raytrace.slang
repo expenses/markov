@@ -297,7 +297,7 @@ float3 compute_shading<S: ISampleGenerator>(HitInfo<uint> hit, float3 ray_dir, i
         }
 
         let ray = Ray(offset_ray_origin(material.shading_data), sample_result.wo);
-        hit = ray_cast(ray, true);
+        hit = ray_cast(ray, false);
         if (!hit.Miss) {
             material = create_material_from_hit(hit, ray.dir);
             radiance += material.get_direct_lighting(sampler) * throughput;

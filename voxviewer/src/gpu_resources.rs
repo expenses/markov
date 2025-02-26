@@ -1,5 +1,4 @@
 use crate::resource_loading::{load_resource_bytes, load_resource_str};
-use crate::Material;
 use crate::USE_SPIRV_SHADER;
 use wgpu::util::DeviceExt;
 
@@ -209,7 +208,7 @@ impl Pipelines {
             }),
             materials: device.create_buffer(&wgpu::BufferDescriptor {
                 label: None,
-                size: std::mem::size_of::<[Material; 255]>() as _,
+                size: std::mem::size_of::<[u32; 255]>() as _,
                 usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
                 mapped_at_creation: false,
             }),
